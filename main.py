@@ -11,37 +11,33 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
 
-print("=== RUNNING main.py (debug build) ===")
+print("=== RUNNING main.py (final debug) ===")
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+# fallback чтобы не падал, но в /whoami всё равно увидишь что реально пришло
+ADMIN_ID_RAW = os.getenv("ADMIN_ID") or "0"
 DB_NAME = "bot.db"
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан в переменных окружения")
 
-if not ADMIN_ID_RAW:
-    raise RuntimeError("ADMIN_ID не задан в переменных окружения")
-
 try:
     ADMIN_ID = int(ADMIN_ID_RAW)
 except ValueError:
-    raise RuntimeError("ADMIN_ID должен быть числом (telegram user id)")
+    ADMIN_ID = 0
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
 
-# ---------- GLOBAL ERROR HANDLER ----------
 @dp.errors_handler()
 async def on_error(update, exception):
     log.exception("ERROR while handling update: %r", update)
-    return True  # чтобы не падал polling
+    return True
 
 
-# ---------- DB ----------
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
@@ -88,30 +84,29 @@ def is_admin(message: types.Message) -> bool:
     return message.from_user is not None and message.from_user.id == ADMIN_ID
 
 
-# ---------- DIAG ----------
+# --- DIAG ---
 @dp.message_handler(commands=["ping"])
 async def ping(message: types.Message):
-    log.info("PING from %s text=%r", message.from_user.id, message.text)
+    log.info("PING from=%s text=%r", message.from_user.id, message.text)
     await message.reply("pong ✅")
 
 
 @dp.message_handler(commands=["whoami"])
 async def whoami(message: types.Message):
-    log.info("WHOAMI from %s text=%r", message.from_user.id, message.text)
+    log.info("WHOAMI from=%s text=%r", message.from_user.id, message.text)
     await message.reply(
         "DIAG 🔎\n"
         f"your id: {message.from_user.id}\n"
         f"chat id: {message.chat.id}\n"
-        f"ADMIN_ID env: {os.getenv('ADMIN_ID')}\n"
+        f"ADMIN_ID env raw: {os.getenv('ADMIN_ID')}\n"
         f"parsed ADMIN_ID: {ADMIN_ID}\n"
         f"text: {message.text}"
     )
 
 
-# ---------- USER FLOW ----------
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
-    log.info("START from %s text=%r", message.from_user.id, message.text)
+    log.info("START from=%s text=%r", message.from_user.id, message.text)
     await add_user(message.from_user)
     kb = InlineKeyboardMarkup().add(
         InlineKeyboardButton("🚀 Начать диалог", callback_data="start_dialog")
@@ -125,46 +120,17 @@ async def start(message: types.Message):
     )
 
 
-@dp.callback_query_handler(lambda c: c.data == "start_dialog")
-async def start_dialog(call: types.CallbackQuery):
-    log.info("CALLBACK start_dialog from %s", call.from_user.id)
-    kb = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("💳 Оплатить 99 ₽", callback_data="pay")
-    )
-    await call.message.edit_text(
-        "💬 <b>Для начала общения требуется подписка</b>\n\n"
-        "💰 Стоимость: <b>99 ₽</b>",
-        reply_markup=kb,
-        parse_mode="HTML",
-    )
-
-
-@dp.callback_query_handler(lambda c: c.data == "pay")
-async def pay(call: types.CallbackQuery):
-    log.info("CALLBACK pay from %s", call.from_user.id)
-    card = await get_card()
-    kb = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("📨 Отправить чек менеджеру", url="https://t.me/fepxu")
-    )
-    await call.message.edit_text(
-        "💳 <b>Оплата подписки</b>\n\n"
-        f"🔢 <b>Карта:</b> <code>{card}</code>\n"
-        "💰 <b>Сумма:</b> 99 ₽",
-        reply_markup=kb,
-        parse_mode="HTML",
-    )
-
-
-# ---------- ADMIN ----------
 @dp.message_handler(commands=["admin"])
 async def admin_panel(message: types.Message):
-    log.info("ADMIN HANDLER HIT from %s text=%r", message.from_user.id, message.text)
+    log.info("ADMIN HANDLER HIT from=%s text=%r", message.from_user.id, message.text)
 
     if not is_admin(message):
         await message.reply(
             "⛔️ Нет доступа.\n\n"
             f"Твой id: {message.from_user.id}\n"
-            f"ADMIN_ID env: {os.getenv('ADMIN_ID')}"
+            f"ADMIN_ID (parsed): {ADMIN_ID}\n"
+            f"ADMIN_ID env raw: {os.getenv('ADMIN_ID')}\n"
+            "Сверь по /whoami"
         )
         return
 
@@ -181,7 +147,7 @@ async def admin_panel(message: types.Message):
 
 @dp.message_handler(commands=["setcard"])
 async def admin_setcard(message: types.Message):
-    log.info("SETCARD from %s text=%r", message.from_user.id, message.text)
+    log.info("SETCARD from=%s text=%r", message.from_user.id, message.text)
 
     if not is_admin(message):
         await message.reply("⛔️ Нет доступа. Проверь /whoami")
@@ -198,7 +164,7 @@ async def admin_setcard(message: types.Message):
 
 @dp.message_handler(commands=["users"])
 async def admin_users(message: types.Message):
-    log.info("USERS from %s text=%r", message.from_user.id, message.text)
+    log.info("USERS from=%s text=%r", message.from_user.id, message.text)
 
     if not is_admin(message):
         await message.reply("⛔️ Нет доступа. Проверь /whoami")
@@ -211,11 +177,41 @@ async def admin_users(message: types.Message):
     await message.reply(f"👥 Пользователей в базе: {count}")
 
 
-# ---------- CATCH ALL (ПОСЛЕДНИМ!) ----------
+@dp.callback_query_handler(lambda c: c.data == "start_dialog")
+async def start_dialog(call: types.CallbackQuery):
+    log.info("CALLBACK start_dialog from=%s", call.from_user.id)
+    kb = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("💳 Оплатить 99 ₽", callback_data="pay")
+    )
+    await call.message.edit_text(
+        "💬 <b>Для начала общения требуется подписка</b>\n\n"
+        "💰 Стоимость: <b>99 ₽</b>",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data == "pay")
+async def pay(call: types.CallbackQuery):
+    log.info("CALLBACK pay from=%s", call.from_user.id)
+    card = await get_card()
+    kb = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("📨 Отправить чек менеджеру", url="https://t.me/fepxu")
+    )
+    await call.message.edit_text(
+        "💳 <b>Оплата подписки</b>\n\n"
+        f"🔢 <b>Карта:</b> <code>{card}</code>\n"
+        "💰 <b>Сумма:</b> 99 ₽",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+# если /admin не распознался как команда — увидим здесь, что реально прилетело
 @dp.message_handler(content_types=types.ContentTypes.ANY)
 async def catch_all(message: types.Message):
-    # если /admin не попал в commands handler — тут увидим реальный text
-    log.info("CATCH_ALL from %s type=%s text=%r", message.from_user.id, message.content_type, getattr(message, "text", None))
+    log.info("CATCH_ALL from=%s type=%s text=%r",
+             message.from_user.id, message.content_type, getattr(message, "text", None))
 
 
 async def on_startup(dp: Dispatcher):
