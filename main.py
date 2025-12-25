@@ -1,13 +1,17 @@
 import asyncio
+import logging
 import os
 
 import aiosqlite
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
 from dotenv import load_dotenv
 
-print("=== RUNNING main.py (with webhook delete + diag) ===")
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("bot")
+
+print("=== RUNNING main.py (debug build) ===")
 
 load_dotenv()
 
@@ -30,6 +34,14 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
 
+# ---------- GLOBAL ERROR HANDLER ----------
+@dp.errors_handler()
+async def on_error(update, exception):
+    log.exception("ERROR while handling update: %r", update)
+    return True  # чтобы не падал polling
+
+
+# ---------- DB ----------
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
@@ -54,7 +66,7 @@ async def add_user(user: types.User):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "INSERT OR IGNORE INTO users VALUES (?, ?)",
-            (user.id, user.username or "без_юза")
+            (user.id, user.username or "без_юза"),
         )
         await db.commit()
 
@@ -73,17 +85,19 @@ async def set_card(value: str):
 
 
 def is_admin(message: types.Message) -> bool:
-    return bool(message.from_user) and message.from_user.id == ADMIN_ID
+    return message.from_user is not None and message.from_user.id == ADMIN_ID
 
 
-# --- DIAG ---
+# ---------- DIAG ----------
 @dp.message_handler(commands=["ping"])
 async def ping(message: types.Message):
+    log.info("PING from %s text=%r", message.from_user.id, message.text)
     await message.reply("pong ✅")
 
 
 @dp.message_handler(commands=["whoami"])
 async def whoami(message: types.Message):
+    log.info("WHOAMI from %s text=%r", message.from_user.id, message.text)
     await message.reply(
         "DIAG 🔎\n"
         f"your id: {message.from_user.id}\n"
@@ -94,8 +108,10 @@ async def whoami(message: types.Message):
     )
 
 
+# ---------- USER FLOW ----------
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
+    log.info("START from %s text=%r", message.from_user.id, message.text)
     await add_user(message.from_user)
     kb = InlineKeyboardMarkup().add(
         InlineKeyboardButton("🚀 Начать диалог", callback_data="start_dialog")
@@ -109,14 +125,46 @@ async def start(message: types.Message):
     )
 
 
+@dp.callback_query_handler(lambda c: c.data == "start_dialog")
+async def start_dialog(call: types.CallbackQuery):
+    log.info("CALLBACK start_dialog from %s", call.from_user.id)
+    kb = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("💳 Оплатить 99 ₽", callback_data="pay")
+    )
+    await call.message.edit_text(
+        "💬 <b>Для начала общения требуется подписка</b>\n\n"
+        "💰 Стоимость: <b>99 ₽</b>",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data == "pay")
+async def pay(call: types.CallbackQuery):
+    log.info("CALLBACK pay from %s", call.from_user.id)
+    card = await get_card()
+    kb = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("📨 Отправить чек менеджеру", url="https://t.me/fepxu")
+    )
+    await call.message.edit_text(
+        "💳 <b>Оплата подписки</b>\n\n"
+        f"🔢 <b>Карта:</b> <code>{card}</code>\n"
+        "💰 <b>Сумма:</b> 99 ₽",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+# ---------- ADMIN ----------
 @dp.message_handler(commands=["admin"])
 async def admin_panel(message: types.Message):
+    log.info("ADMIN HANDLER HIT from %s text=%r", message.from_user.id, message.text)
+
     if not is_admin(message):
         await message.reply(
             "⛔️ Нет доступа.\n\n"
             f"Твой id: {message.from_user.id}\n"
-            f"ADMIN_ID в env: {os.getenv('ADMIN_ID')}\n"
-            "Поставь ADMIN_ID равным твоему id (см. /whoami) и перезапусти."
+            f"ADMIN_ID env: {os.getenv('ADMIN_ID')}"
         )
         return
 
@@ -133,8 +181,10 @@ async def admin_panel(message: types.Message):
 
 @dp.message_handler(commands=["setcard"])
 async def admin_setcard(message: types.Message):
+    log.info("SETCARD from %s text=%r", message.from_user.id, message.text)
+
     if not is_admin(message):
-        await message.reply("⛔️ Нет доступа. Смотри /whoami")
+        await message.reply("⛔️ Нет доступа. Проверь /whoami")
         return
 
     text = message.get_args().strip()
@@ -148,8 +198,10 @@ async def admin_setcard(message: types.Message):
 
 @dp.message_handler(commands=["users"])
 async def admin_users(message: types.Message):
+    log.info("USERS from %s text=%r", message.from_user.id, message.text)
+
     if not is_admin(message):
-        await message.reply("⛔️ Нет доступа. Смотри /whoami")
+        await message.reply("⛔️ Нет доступа. Проверь /whoami")
         return
 
     async with aiosqlite.connect(DB_NAME) as db:
@@ -159,39 +211,17 @@ async def admin_users(message: types.Message):
     await message.reply(f"👥 Пользователей в базе: {count}")
 
 
-@dp.callback_query_handler(lambda c: c.data == "start_dialog")
-async def start_dialog(call: types.CallbackQuery):
-    kb = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("💳 Оплатить 99 ₽", callback_data="pay")
-    )
-    await call.message.edit_text(
-        "💬 <b>Для начала общения требуется подписка</b>\n\n"
-        "💰 Стоимость: <b>99 ₽</b>",
-        reply_markup=kb,
-        parse_mode="HTML",
-    )
-
-
-@dp.callback_query_handler(lambda c: c.data == "pay")
-async def pay(call: types.CallbackQuery):
-    card = await get_card()
-    kb = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("📨 Отправить чек менеджеру", url="https://t.me/fepxu")
-    )
-    await call.message.edit_text(
-        f"💳 <b>Оплата подписки</b>\n\n"
-        f"🔢 <b>Карта:</b> <code>{card}</code>\n"
-        f"💰 <b>Сумма:</b> 99 ₽",
-        reply_markup=kb,
-        parse_mode="HTML",
-    )
+# ---------- CATCH ALL (ПОСЛЕДНИМ!) ----------
+@dp.message_handler(content_types=types.ContentTypes.ANY)
+async def catch_all(message: types.Message):
+    # если /admin не попал в commands handler — тут увидим реальный text
+    log.info("CATCH_ALL from %s type=%s text=%r", message.from_user.id, message.content_type, getattr(message, "text", None))
 
 
 async def on_startup(dp: Dispatcher):
-    # ключевой фикс: удаляем webhook, иначе polling часто "молчит"
     await bot.delete_webhook(drop_pending_updates=True)
-    print("WEBHOOK DELETED ✅")
-    print("BOT STARTED ✅")
+    log.info("WEBHOOK DELETED ✅")
+    log.info("BOT STARTED ✅")
 
 
 if __name__ == "__main__":
